@@ -1,7 +1,7 @@
 //! Service API object definitions
 
 use chrono::Utc;
-use chrono::{serde::ts_seconds, DateTime};
+use chrono::DateTime;
 use std::{collections::HashMap, hash::Hash};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -591,14 +591,14 @@ where
 }
 
 /// Scheduling mode for the service.
-#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(missing_docs)]
 pub enum ServiceSpecMode {
     Replicated {
         #[serde(rename = "Replicas")]
         replicas: i64,
     },
-    Global,
+    Global(HashMap<String, String>),
 }
 
 /// Specification for the update or rollback strategy of the service.
