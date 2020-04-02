@@ -321,8 +321,6 @@ pub mod image;
 mod named_pipe;
 pub mod network;
 mod read;
-pub mod service;
-mod service_models;
 pub mod system;
 mod uri;
 pub mod volume;
