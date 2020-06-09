@@ -554,7 +554,7 @@ async fn mount_volume_container_test(docker: Docker) -> Result<(), Error> {
                 "/tmp"
             },
             type_: "bind",
-            consistency: Some("default"),
+            consistency: "default",
             ..Default::default()
         }]),
         ..Default::default()
