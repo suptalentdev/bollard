@@ -1,11 +1,13 @@
 //! Container API: run docker containers and manage their lifecycle
 
+use arrayvec::ArrayVec;
 use chrono::{DateTime, Utc};
 use futures_core::Stream;
 use http::header::CONTENT_TYPE;
 use http::request::Builder;
 use hyper::{body::Bytes, Body, Method};
 use serde::Serialize;
+use serde_json;
 
 use std::cmp::Eq;
 use std::collections::HashMap;
@@ -13,6 +15,7 @@ use std::fmt;
 use std::hash::Hash;
 
 use super::Docker;
+use crate::docker::{FALSE_STR, TRUE_STR};
 use crate::errors::Error;
 
 use crate::models::*;
@@ -44,10 +47,10 @@ use crate::models::*;
 ///     ..Default::default()
 /// };
 /// ```
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default)]
 pub struct ListContainersOptions<T>
 where
-    T: Into<String> + Eq + Hash + Serialize,
+    T: AsRef<str> + Eq + Hash,
 {
     /// Return all containers. By default, only running containers are shown
     pub all: bool,
@@ -71,8 +74,41 @@ where
     ///  - `since`=(`<container id>` or `<container name>`)
     ///  - `status`=(`created`|`restarting`|`running`|`removing`|`paused`|`exited`|`dead`)
     ///  - `volume`=(`<volume name>` or `<mount point destination>`)
-    #[serde(serialize_with = "crate::docker::serialize_as_json")]
     pub filters: HashMap<T, Vec<T>>,
+}
+
+#[allow(missing_docs)]
+/// Trait providing implementations for [List Containers Options](struct.ListContainersOptions.html)
+/// struct.
+pub trait ListContainersQueryParams<K, V>
+where
+    K: AsRef<str>,
+    V: AsRef<str>,
+{
+    fn into_array(self) -> Result<ArrayVec<[(K, V); 4]>, Error>;
+}
+
+impl<'a, T: AsRef<str> + Eq + Hash> ListContainersQueryParams<&'a str, String>
+    for ListContainersOptions<T>
+where
+    T: ::serde::Serialize,
+{
+    fn into_array(self) -> Result<ArrayVec<[(&'a str, String); 4]>, Error> {
+        Ok(ArrayVec::from([
+            ("all", self.all.to_string()),
+            (
+                "limit",
+                self.limit
+                    .map(|l| l.to_string())
+                    .unwrap_or_else(|| String::new()),
+            ),
+            ("size", self.size.to_string()),
+            (
+                "filters",
+                serde_json::to_string(&self.filters)?,
+            ),
+        ]))
+    }
 }
 
 /// Parameters used in the [Create Container API](../struct.Docker.html#method.create_container)
@@ -86,13 +122,30 @@ where
 ///     name: "my-new-container",
 /// };
 /// ```
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default)]
 pub struct CreateContainerOptions<T>
 where
-    T: Into<String> + Serialize,
+    T: AsRef<str>,
 {
     /// Assign the specified name to the container.
     pub name: T,
+}
+
+/// Trait providing implementations for [Create Container Options](struct.CreateContainerOptions.html)
+/// struct.
+#[allow(missing_docs)]
+pub trait CreateContainerQueryParams<K, V>
+where
+    K: AsRef<str>,
+    V: AsRef<str>,
+{
+    fn into_array(self) -> Result<ArrayVec<[(K, V); 1]>, Error>;
+}
+
+impl<'a, T: AsRef<str>> CreateContainerQueryParams<&'a str, T> for CreateContainerOptions<T> {
+    fn into_array(self) -> Result<ArrayVec<[(&'a str, T); 1]>, Error> {
+        Ok(ArrayVec::from([("name", self.name)]))
+    }
 }
 
 /// This container's networking configuration.
@@ -280,6 +333,15 @@ impl From<ContainerConfig> for Config<String> {
     }
 }
 
+/// Result type for the [Create Container API](../struct.Docker.html#method.create_container)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+#[allow(missing_docs)]
+pub struct CreateContainerResults {
+    pub id: String,
+    pub warnings: Option<Vec<String>>,
+}
+
 /// Parameters used in the [Stop Container API](../struct.Docker.html#method.stop_container)
 ///
 /// ## Examples
@@ -289,10 +351,25 @@ impl From<ContainerConfig> for Config<String> {
 /// StopContainerOptions{
 ///     t: 30,
 /// };
-#[derive(Debug, Copy, Clone, Default, Serialize)]
+#[derive(Debug, Copy, Clone, Default)]
 pub struct StopContainerOptions {
     /// Number of seconds to wait before killing the container
     pub t: i64,
+}
+
+/// Trait providing implementations for [Stop Container Options](struct.StopContainerOptions.html).
+#[allow(missing_docs)]
+pub trait StopContainerQueryParams<K>
+where
+    K: AsRef<str>,
+{
+    fn into_array(self) -> Result<ArrayVec<[(K, String); 1]>, Error>;
+}
+
+impl<'a> StopContainerQueryParams<&'a str> for StopContainerOptions {
+    fn into_array(self) -> Result<ArrayVec<[(&'a str, String); 1]>, Error> {
+        Ok(ArrayVec::from([("t", self.t.to_string())]))
+    }
 }
 
 /// Parameters used in the [Start Container API](../struct.Docker.html#method.start_container)
@@ -306,15 +383,30 @@ pub struct StopContainerOptions {
 ///     detach_keys: "ctrl-^"
 /// };
 /// ```
-#[derive(Debug, Clone, Default, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Default)]
 pub struct StartContainerOptions<T>
 where
-    T: Into<String> + Serialize,
+    T: AsRef<str>,
 {
     /// Override the key sequence for detaching a container. Format is a single character `[a-Z]` or
     /// `ctrl-<value>` where `<value>` is one of: `a-z`, `@`, `^`, `[`, `,` or `_`.
     pub detach_keys: T,
+}
+
+/// Trait providing implementations for [Start Container Options](struct.StartContainerOptions.html).
+#[allow(missing_docs)]
+pub trait StartContainerQueryParams<K, V>
+where
+    K: AsRef<str>,
+    V: AsRef<str>,
+{
+    fn into_array(self) -> Result<ArrayVec<[(K, V); 1]>, Error>;
+}
+
+impl<'a, T: AsRef<str>> StartContainerQueryParams<&'a str, T> for StartContainerOptions<T> {
+    fn into_array(self) -> Result<ArrayVec<[(&'a str, T); 1]>, Error> {
+        Ok(ArrayVec::from([("detachKeys", self.detach_keys)]))
+    }
 }
 
 /// Parameters used in the [Remove Container API](../struct.Docker.html#method.remove_container)
@@ -331,7 +423,7 @@ where
 ///     ..Default::default()
 /// };
 /// ```
-#[derive(Debug, Copy, Clone, Default, Serialize)]
+#[derive(Debug, Copy, Clone, Default)]
 pub struct RemoveContainerOptions {
     /// Remove the volumes associated with the container.
     pub v: bool,
@@ -339,6 +431,26 @@ pub struct RemoveContainerOptions {
     pub force: bool,
     /// Remove the specified link associated with the container.
     pub link: bool,
+}
+
+/// Trait providing implementations for [Remove Container Options](struct.RemoveContainerOptions.html).
+#[allow(missing_docs)]
+pub trait RemoveContainerQueryParams<K, V>
+where
+    K: AsRef<str>,
+    V: AsRef<str>,
+{
+    fn into_array(self) -> Result<ArrayVec<[(K, V); 3]>, Error>;
+}
+
+impl<'a> RemoveContainerQueryParams<&'a str, &'a str> for RemoveContainerOptions {
+    fn into_array(self) -> Result<ArrayVec<[(&'a str, &'a str); 3]>, Error> {
+        Ok(ArrayVec::from([
+            ("v", if self.v { TRUE_STR } else { FALSE_STR }),
+            ("force", if self.force { TRUE_STR } else { FALSE_STR }),
+            ("link", if self.link { TRUE_STR } else { FALSE_STR }),
+        ]))
+    }
 }
 
 /// Parameters used in the [Wait Container API](../struct.Docker.html#method.wait_container)
@@ -352,14 +464,47 @@ pub struct RemoveContainerOptions {
 ///     condition: "not-running",
 /// };
 /// ```
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default)]
 pub struct WaitContainerOptions<T>
 where
-    T: Into<String> + Serialize,
+    T: AsRef<str>,
 {
     /// Wait until a container state reaches the given condition, either 'not-running' (default),
     /// 'next-exit', or 'removed'.
     pub condition: T,
+}
+
+/// Trait providing implementations for [Wait Container Options](struct.WaitContainerOptions.html).
+#[allow(missing_docs)]
+pub trait WaitContainerQueryParams<K, V>
+where
+    K: AsRef<str>,
+    V: AsRef<str>,
+{
+    fn into_array(self) -> Result<ArrayVec<[(K, V); 1]>, Error>;
+}
+
+impl<'a, T: AsRef<str>> WaitContainerQueryParams<&'a str, T> for WaitContainerOptions<T> {
+    fn into_array(self) -> Result<ArrayVec<[(&'a str, T); 1]>, Error> {
+        Ok(ArrayVec::from([("condition", self.condition)]))
+    }
+}
+
+/// Error messages returned in the [Wait Container API](../struct.Docker.html#method.wait_container)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+#[allow(missing_docs)]
+pub struct WaitContainerResultsError {
+    pub message: String,
+}
+
+/// Result type for the [Wait Container API](../struct.Docker.html#method.wait_container)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+#[allow(missing_docs)]
+pub struct WaitContainerResults {
+    pub status_code: u64,
+    pub error: Option<WaitContainerResultsError>,
 }
 
 /// Parameters used in the [Restart Container API](../struct.Docker.html#method.restart_container)
@@ -373,10 +518,25 @@ where
 ///     t: 30,
 /// };
 /// ```
-#[derive(Debug, Copy, Clone, Default, Serialize)]
+#[derive(Debug, Copy, Clone, Default)]
 pub struct RestartContainerOptions {
     /// Number of seconds to wait before killing the container.
     pub t: isize,
+}
+
+/// Trait providing implementations for [Restart Container Options](struct.RestartContainerOptions.html).
+#[allow(missing_docs)]
+pub trait RestartContainerQueryParams<K>
+where
+    K: AsRef<str>,
+{
+    fn into_array(self) -> Result<ArrayVec<[(K, String); 1]>, Error>;
+}
+
+impl<'a> RestartContainerQueryParams<&'a str> for RestartContainerOptions {
+    fn into_array(self) -> Result<ArrayVec<[(&'a str, String); 1]>, Error> {
+        Ok(ArrayVec::from([("t", self.t.to_string())]))
+    }
 }
 
 /// Parameters used in the [Inspect Container API](../struct.Docker.html#method.inspect_container)
@@ -390,10 +550,29 @@ pub struct RestartContainerOptions {
 ///     size: false,
 /// };
 /// ```
-#[derive(Debug, Copy, Clone, Default, Serialize)]
+#[derive(Debug, Copy, Clone, Default)]
 pub struct InspectContainerOptions {
     /// Return the size of container as fields `SizeRw` and `SizeRootFs`
     pub size: bool,
+}
+
+/// Trait providing implementations for [Inspect Container Options](struct.InspectContainerOptions.html).
+#[allow(missing_docs)]
+pub trait InspectContainerQueryParams<K, V>
+where
+    K: AsRef<str>,
+    V: AsRef<str>,
+{
+    fn into_array(self) -> Result<ArrayVec<[(K, V); 1]>, Error>;
+}
+
+impl<'a> InspectContainerQueryParams<&'a str, &'a str> for InspectContainerOptions {
+    fn into_array(self) -> Result<ArrayVec<[(&'a str, &'a str); 1]>, Error> {
+        Ok(ArrayVec::from([(
+            "size",
+            if self.size { TRUE_STR } else { FALSE_STR },
+        )]))
+    }
 }
 
 /// Parameters used in the [Top Processes API](../struct.Docker.html#method.top_processes)
@@ -407,14 +586,40 @@ pub struct InspectContainerOptions {
 ///     ps_args: "aux",
 /// };
 /// ```
-#[derive(Debug, Clone, Default, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Default)]
 pub struct TopOptions<T>
 where
-    T: Into<String> + Serialize,
+    T: AsRef<str>,
 {
     /// The arguments to pass to `ps`. For example, `aux`
     pub ps_args: T,
+}
+
+/// ## Top Query Params
+///
+/// Trait providing implementations for [Top Options](struct.TopOptions.html).
+#[allow(missing_docs)]
+pub trait TopQueryParams<K, V>
+where
+    K: AsRef<str>,
+    V: AsRef<str>,
+{
+    fn into_array(self) -> Result<ArrayVec<[(K, V); 1]>, Error>;
+}
+
+impl<'a, T: AsRef<str>> TopQueryParams<&'a str, T> for TopOptions<T> {
+    fn into_array(self) -> Result<ArrayVec<[(&'a str, T); 1]>, Error> {
+        Ok(ArrayVec::from([("ps_args", self.ps_args)]))
+    }
+}
+
+/// Result type for the [Top Processes API](../struct.Docker.html#method.top_processes)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+#[allow(missing_docs)]
+pub struct TopResult {
+    pub titles: Vec<String>,
+    pub processes: Option<Vec<Vec<String>>>,
 }
 
 /// Parameters used in the [Logs API](../struct.Docker.html#method.logs)
@@ -426,16 +631,13 @@ where
 ///
 /// use std::default::Default;
 ///
-/// LogsOptions::<String>{
+/// LogsOptions{
 ///     stdout: true,
 ///     ..Default::default()
 /// };
 /// ```
-#[derive(Debug, Clone, Default, Serialize)]
-pub struct LogsOptions<T>
-where
-    T: Into<String> + Serialize,
-{
+#[derive(Debug, Clone, Default)]
+pub struct LogsOptions {
     /// Return the logs as a finite stream.
     pub follow: bool,
     /// Return logs from `stdout`.
@@ -450,7 +652,30 @@ where
     pub timestamps: bool,
     /// Only return this number of log lines from the end of the logs. Specify as an integer or all
     /// to output `all` log lines.
-    pub tail: T,
+    pub tail: String,
+}
+
+/// Trait providing implementations for [Logs Options](struct.LogsOptions.html).
+#[allow(missing_docs)]
+pub trait LogsQueryParams<K>
+where
+    K: AsRef<str>,
+{
+    fn into_array(self) -> Result<ArrayVec<[(K, String); 7]>, Error>;
+}
+
+impl<'a> LogsQueryParams<&'a str> for LogsOptions {
+    fn into_array(self) -> Result<ArrayVec<[(&'a str, String); 7]>, Error> {
+        Ok(ArrayVec::from([
+            ("follow", self.follow.to_string()),
+            ("stdout", self.stdout.to_string()),
+            ("stderr", self.stderr.to_string()),
+            ("since", self.since.to_string()),
+            ("until", self.until.to_string()),
+            ("timestamps", self.timestamps.to_string()),
+            ("tail", self.tail),
+        ]))
+    }
 }
 
 /// Result type for the [Logs API](../struct.Docker.html#method.logs)
@@ -486,10 +711,29 @@ impl fmt::Display for LogOutput {
 ///     stream: false,
 /// };
 /// ```
-#[derive(Debug, Copy, Clone, Default, Serialize)]
+#[derive(Debug, Copy, Clone, Default)]
 pub struct StatsOptions {
     /// Stream the output. If false, the stats will be output once and then it will disconnect.
     pub stream: bool,
+}
+
+/// Trait providing implementations for [Stats Options](struct.StatsOptions.html).
+#[allow(missing_docs)]
+pub trait StatsQueryParams<K, V>
+where
+    K: AsRef<str>,
+    V: AsRef<str>,
+{
+    fn into_array(self) -> Result<ArrayVec<[(K, V); 1]>, Error>;
+}
+
+impl<'a> StatsQueryParams<&'a str, &'a str> for StatsOptions {
+    fn into_array(self) -> Result<ArrayVec<[(&'a str, &'a str); 1]>, Error> {
+        Ok(ArrayVec::from([(
+            "stream",
+            if self.stream { TRUE_STR } else { FALSE_STR },
+        )]))
+    }
 }
 
 /// Granular memory statistics for the container.
@@ -660,13 +904,29 @@ pub struct BlkioStatsEntry {
 ///     signal: "SIGINT",
 /// };
 /// ```
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default)]
 pub struct KillContainerOptions<T>
 where
-    T: Into<String> + Serialize,
+    T: AsRef<str>,
 {
     /// Signal to send to the container as an integer or string (e.g. `SIGINT`)
     pub signal: T,
+}
+
+/// Trait providing implementations for [Kill Container Options](struct.KillContainerOptions.html).
+#[allow(missing_docs)]
+pub trait KillContainerQueryParams<K, V>
+where
+    K: AsRef<str>,
+    V: AsRef<str>,
+{
+    fn into_array(self) -> Result<ArrayVec<[(K, V); 1]>, Error>;
+}
+
+impl<'a, T: AsRef<str>> KillContainerQueryParams<&'a str, T> for KillContainerOptions<T> {
+    fn into_array(self) -> Result<ArrayVec<[(&'a str, T); 1]>, Error> {
+        Ok(ArrayVec::from([("signal", self.signal)]))
+    }
 }
 
 /// Configuration for the [Update Container API](../struct.Docker.html#method.update_container)
@@ -867,13 +1127,29 @@ where
 ///     name: "my_new_container_name"
 /// };
 /// ```
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default)]
 pub struct RenameContainerOptions<T>
 where
-    T: Into<String> + Serialize,
+    T: AsRef<str>,
 {
     /// New name for the container.
     pub name: T,
+}
+
+/// Trait providing implementations for [Rename Container Options](struct.RenameContainerOptions.html).
+#[allow(missing_docs)]
+pub trait RenameContainerQueryParams<K, V>
+where
+    K: AsRef<str>,
+    V: AsRef<str>,
+{
+    fn into_array(self) -> Result<ArrayVec<[(K, V); 1]>, Error>;
+}
+
+impl<'a, T: AsRef<str>> RenameContainerQueryParams<&'a str, T> for RenameContainerOptions<T> {
+    fn into_array(self) -> Result<ArrayVec<[(&'a str, T); 1]>, Error> {
+        Ok(ArrayVec::from([("name", self.name)]))
+    }
 }
 
 /// Parameters used in the [Prune Containers API](../struct.Docker.html#method.prune_containers)
@@ -892,18 +1168,46 @@ where
 ///     filters: filters
 /// };
 /// ```
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default)]
 pub struct PruneContainersOptions<T>
 where
-    T: Into<String> + Eq + Hash + Serialize,
+    T: AsRef<str> + Eq + Hash,
 {
     /// Filters to process on the prune list, encoded as JSON.
     ///
     /// Available filters:
     ///  - `until=<timestamp>` Prune containers created before this timestamp. The `<timestamp>` can be Unix timestamps, date formatted timestamps, or Go duration strings (e.g. `10m`, `1h30m`) computed relative to the daemon machine's time.
     ///  - label (`label=<key>`, `label=<key>=<value>`, `label!=<key>`, or `label!=<key>=<value>`) Prune containers with (or without, in case `label!=...` is used) the specified labels.
-    #[serde(serialize_with = "crate::docker::serialize_as_json")]
     pub filters: HashMap<T, Vec<T>>,
+}
+
+/// Trait providing implementations for [Prune Containers Options](struct.PruneContainersOptions.html).
+#[allow(missing_docs)]
+pub trait PruneContainersQueryParams<K>
+where
+    K: AsRef<str>,
+{
+    fn into_array(self) -> Result<ArrayVec<[(K, String); 1]>, Error>;
+}
+
+impl<'a, T: AsRef<str> + Eq + Hash + Serialize> PruneContainersQueryParams<&'a str>
+    for PruneContainersOptions<T>
+{
+    fn into_array(self) -> Result<ArrayVec<[(&'a str, String); 1]>, Error> {
+        Ok(ArrayVec::from([(
+            "filters",
+            serde_json::to_string(&self.filters)?,
+        )]))
+    }
+}
+
+/// Result type for the [Prune Containers API](../struct.Docker.html#method.prune_containers)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+#[allow(missing_docs)]
+pub struct PruneContainersResults {
+    pub containers_deleted: Option<Vec<String>>,
+    pub space_reclaimed: u64,
 }
 
 /// Parameters used in the [Upload To Container
@@ -921,17 +1225,35 @@ where
 ///     ..Default::default()
 /// };
 /// ```
-#[derive(Debug, Clone, Default, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Default)]
 pub struct UploadToContainerOptions<T>
 where
-    T: Into<String> + Serialize,
+    T: AsRef<str>,
 {
     /// Path to a directory in the container to extract the archive’s contents into.
     pub path: T,
     /// If “1”, “true”, or “True” then it will be an error if unpacking the given content would
     /// cause an existing directory to be replaced with a non-directory and vice versa.
     pub no_overwrite_dir_non_dir: T,
+}
+
+/// Trait providing implementations for [Upload To Container Options](struct.UploadToContainerOptions.html).
+#[allow(missing_docs)]
+pub trait UploadToContainerQueryParams<K, V>
+where
+    K: AsRef<str>,
+    V: AsRef<str>,
+{
+    fn into_array(self) -> Result<ArrayVec<[(K, V); 2]>, Error>;
+}
+
+impl<'a, T: AsRef<str>> UploadToContainerQueryParams<&'a str, T> for UploadToContainerOptions<T> {
+    fn into_array(self) -> Result<ArrayVec<[(&'a str, T); 2]>, Error> {
+        Ok(ArrayVec::from([
+            ("path", self.path),
+            ("noOverwriteDirNonDir", self.no_overwrite_dir_non_dir),
+        ]))
+    }
 }
 
 /// Parameters used in the [Download From Container
@@ -946,13 +1268,31 @@ where
 ///     path: "/opt",
 /// };
 /// ```
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default)]
 pub struct DownloadFromContainerOptions<T>
 where
-    T: Into<String> + Serialize,
+    T: AsRef<str>,
 {
     /// Resource in the container’s filesystem to archive.
     pub path: T,
+}
+
+/// Trait providing implementations for [Download From Container Options](struct.DownloadFromContainerOptions.html).
+#[allow(missing_docs)]
+pub trait DownloadFromContainerQueryParams<K, V>
+where
+    K: AsRef<str>,
+    V: AsRef<str>,
+{
+    fn into_array(self) -> Result<ArrayVec<[(K, V); 1]>, Error>;
+}
+
+impl<'a, T: AsRef<str>> DownloadFromContainerQueryParams<&'a str, T>
+    for DownloadFromContainerOptions<T>
+{
+    fn into_array(self) -> Result<ArrayVec<[(&'a str, T); 1]>, Error> {
+        Ok(ArrayVec::from([("path", self.path)]))
+    }
 }
 
 impl Docker {
@@ -991,19 +1331,20 @@ impl Docker {
     ///
     /// docker.list_containers(options);
     /// ```
-    pub async fn list_containers<'de, T>(
+    pub async fn list_containers<'de, T, K>(
         &self,
-        options: Option<ListContainersOptions<T>>,
+        options: Option<T>,
     ) -> Result<Vec<ContainerSummaryInner>, Error>
     where
-        T: Into<String> + Eq + Hash + Serialize,
+        T: ListContainersQueryParams<K, String>,
+        K: AsRef<str>,
     {
         let url = "/containers/json";
 
         let req = self.build_request(
             url,
             Builder::new().method(Method::GET),
-            options,
+            Docker::transpose_option(options.map(|o| o.into_array())),
             Ok(Body::empty()),
         );
 
@@ -1046,20 +1387,22 @@ impl Docker {
     ///
     /// docker.create_container(options, config);
     /// ```
-    pub async fn create_container<T, Z>(
+    pub async fn create_container<T, K, V, Z>(
         &self,
-        options: Option<CreateContainerOptions<T>>,
+        options: Option<T>,
         config: Config<Z>,
     ) -> Result<ContainerCreateResponse, Error>
     where
-        T: Into<String> + Serialize,
+        T: CreateContainerQueryParams<K, V>,
+        K: AsRef<str>,
+        V: AsRef<str>,
         Z: Into<String> + Hash + Eq + Serialize,
     {
         let url = "/containers/create";
         let req = self.build_request(
             url,
             Builder::new().method(Method::POST),
-            options,
+            Docker::transpose_option(options.map(|o| o.into_array())),
             Docker::serialize_payload(Some(config)),
         );
 
@@ -1091,20 +1434,22 @@ impl Docker {
     ///
     /// docker.start_container("hello-world", None::<StartContainerOptions<String>>);
     /// ```
-    pub async fn start_container<T>(
+    pub async fn start_container<T, K, V>(
         &self,
         container_name: &str,
-        options: Option<StartContainerOptions<T>>,
+        options: Option<T>,
     ) -> Result<(), Error>
     where
-        T: Into<String> + Serialize,
+        T: StartContainerQueryParams<K, V>,
+        K: AsRef<str>,
+        V: AsRef<str>,
     {
         let url = format!("/containers/{}/start", container_name);
 
         let req = self.build_request(
             &url,
             Builder::new().method(Method::POST),
-            options,
+            Docker::transpose_option(options.map(|o| o.into_array())),
             Ok(Body::empty()),
         );
 
@@ -1139,17 +1484,21 @@ impl Docker {
     ///
     /// docker.stop_container("hello-world", options);
     /// ```
-    pub async fn stop_container(
+    pub async fn stop_container<T, K>(
         &self,
         container_name: &str,
-        options: Option<StopContainerOptions>,
-    ) -> Result<(), Error> {
+        options: Option<T>,
+    ) -> Result<(), Error>
+    where
+        T: StopContainerQueryParams<K>,
+        K: AsRef<str>,
+    {
         let url = format!("/containers/{}/stop", container_name);
 
         let req = self.build_request(
             &url,
             Builder::new().method(Method::POST),
-            options,
+            Docker::transpose_option(options.map(|o| o.into_array())),
             Ok(Body::empty()),
         );
 
@@ -1188,17 +1537,22 @@ impl Docker {
     ///
     /// docker.remove_container("hello-world", options);
     /// ```
-    pub async fn remove_container(
+    pub async fn remove_container<T, K, V>(
         &self,
         container_name: &str,
-        options: Option<RemoveContainerOptions>,
-    ) -> Result<(), Error> {
+        options: Option<T>,
+    ) -> Result<(), Error>
+    where
+        T: RemoveContainerQueryParams<K, V>,
+        K: AsRef<str>,
+        V: AsRef<str>,
+    {
         let url = format!("/containers/{}", container_name);
 
         let req = self.build_request(
             &url,
             Builder::new().method(Method::DELETE),
-            options,
+            Docker::transpose_option(options.map(|o| o.into_array())),
             Ok(Body::empty()),
         );
 
@@ -1236,20 +1590,22 @@ impl Docker {
     ///
     /// docker.wait_container("hello-world", options);
     /// ```
-    pub fn wait_container<T>(
+    pub fn wait_container<T, K, V>(
         &self,
         container_name: &str,
-        options: Option<WaitContainerOptions<T>>,
+        options: Option<T>,
     ) -> impl Stream<Item = Result<ContainerWaitResponse, Error>>
     where
-        T: Into<String> + Serialize,
+        T: WaitContainerQueryParams<K, V>,
+        K: AsRef<str>,
+        V: AsRef<str>,
     {
         let url = format!("/containers/{}/wait", container_name);
 
         let req = self.build_request(
             &url,
             Builder::new().method(Method::POST),
-            options,
+            Docker::transpose_option(options.map(|o| o.into_array())),
             Ok(Body::empty()),
         );
 
@@ -1285,17 +1641,21 @@ impl Docker {
     ///
     /// docker.restart_container("postgres", options);
     /// ```
-    pub async fn restart_container(
+    pub async fn restart_container<T, K>(
         &self,
         container_name: &str,
-        options: Option<RestartContainerOptions>,
-    ) -> Result<(), Error> {
+        options: Option<T>,
+    ) -> Result<(), Error>
+    where
+        T: RestartContainerQueryParams<K>,
+        K: AsRef<str>,
+    {
         let url = format!("/containers/{}/restart", container_name);
 
         let req = self.build_request(
             &url,
             Builder::new().method(Method::POST),
-            options,
+            Docker::transpose_option(options.map(|o| o.into_array())),
             Ok(Body::empty()),
         );
 
@@ -1330,17 +1690,22 @@ impl Docker {
     ///
     /// docker.inspect_container("hello-world", options);
     /// ```
-    pub async fn inspect_container(
+    pub async fn inspect_container<T, K, V>(
         &self,
         container_name: &str,
-        options: Option<InspectContainerOptions>,
-    ) -> Result<ContainerInspectResponse, Error> {
+        options: Option<T>,
+    ) -> Result<ContainerInspectResponse, Error>
+    where
+        T: InspectContainerQueryParams<K, V>,
+        K: AsRef<str>,
+        V: AsRef<str>,
+    {
         let url = format!("/containers/{}/json", container_name);
 
         let req = self.build_request(
             &url,
             Builder::new().method(Method::GET),
-            options,
+            Docker::transpose_option(options.map(|o| o.into_array())),
             Ok(Body::empty()),
         );
 
@@ -1375,20 +1740,22 @@ impl Docker {
     ///
     /// docker.top_processes("fussybeaver/uhttpd", options);
     /// ```
-    pub async fn top_processes<T>(
+    pub async fn top_processes<T, K, V>(
         &self,
         container_name: &str,
-        options: Option<TopOptions<T>>,
+        options: Option<T>,
     ) -> Result<ContainerTopResponse, Error>
     where
-        T: Into<String> + Serialize,
+        T: TopQueryParams<K, V>,
+        K: AsRef<str>,
+        V: AsRef<str>,
     {
         let url = format!("/containers/{}/top", container_name);
 
         let req = self.build_request(
             &url,
             Builder::new().method(Method::GET),
-            options,
+            Docker::transpose_option(options.map(|o| o.into_array())),
             Ok(Body::empty()),
         );
 
@@ -1421,27 +1788,28 @@ impl Docker {
     ///
     /// use std::default::Default;
     ///
-    /// let options = Some(LogsOptions::<String>{
+    /// let options = Some(LogsOptions{
     ///     stdout: true,
     ///     ..Default::default()
     /// });
     ///
     /// docker.logs("hello-world", options);
     /// ```
-    pub fn logs<T>(
+    pub fn logs<T, K>(
         &self,
         container_name: &str,
-        options: Option<LogsOptions<T>>,
+        options: Option<T>,
     ) -> impl Stream<Item = Result<LogOutput, Error>>
     where
-        T: Into<String> + Serialize,
+        T: LogsQueryParams<K>,
+        K: AsRef<str>,
     {
         let url = format!("/containers/{}/logs", container_name);
 
         let req = self.build_request(
             &url,
             Builder::new().method(Method::GET),
-            options,
+            Docker::transpose_option(options.map(|o| o.into_array())),
             Ok(Body::empty()),
         );
 
@@ -1477,10 +1845,10 @@ impl Docker {
     ) -> Result<Option<Vec<ContainerChangeResponseItem>>, Error> {
         let url = format!("/containers/{}/changes", container_name);
 
-        let req = self.build_request(
+        let req = self.build_request::<_, String, String>(
             &url,
             Builder::new().method(Method::GET),
-            None::<String>,
+            Ok(None::<ArrayVec<[(_, _); 0]>>),
             Ok(Body::empty()),
         );
 
@@ -1517,17 +1885,22 @@ impl Docker {
     ///
     /// docker.stats("hello-world", options);
     /// ```
-    pub fn stats(
+    pub fn stats<T, K, V>(
         &self,
         container_name: &str,
-        options: Option<StatsOptions>,
-    ) -> impl Stream<Item = Result<Stats, Error>> {
+        options: Option<T>,
+    ) -> impl Stream<Item = Result<Stats, Error>>
+    where
+        T: StatsQueryParams<K, V>,
+        K: AsRef<str>,
+        V: AsRef<str>,
+    {
         let url = format!("/containers/{}/stats", container_name);
 
         let req = self.build_request(
             &url,
             Builder::new().method(Method::GET),
-            options,
+            Docker::transpose_option(options.map(|o| o.into_array())),
             Ok(Body::empty()),
         );
 
@@ -1563,20 +1936,22 @@ impl Docker {
     ///
     /// docker.kill_container("postgres", options);
     /// ```
-    pub async fn kill_container<T>(
+    pub async fn kill_container<T, K, V>(
         &self,
         container_name: &str,
-        options: Option<KillContainerOptions<T>>,
+        options: Option<T>,
     ) -> Result<(), Error>
     where
-        T: Into<String> + Serialize,
+        T: KillContainerQueryParams<K, V>,
+        K: AsRef<str>,
+        V: AsRef<str>,
     {
         let url = format!("/containers/{}/kill", container_name);
 
         let req = self.build_request(
             &url,
             Builder::new().method(Method::POST),
-            options,
+            Docker::transpose_option(options.map(|o| o.into_array())),
             Ok(Body::empty()),
         );
 
@@ -1615,20 +1990,17 @@ impl Docker {
     ///
     /// docker.update_container("postgres", config);
     /// ```
-    pub async fn update_container<T>(
+    pub async fn update_container<T: Into<String> + Eq + Hash + Serialize>(
         &self,
         container_name: &str,
         config: UpdateContainerOptions<T>,
-    ) -> Result<(), Error>
-    where
-        T: Into<String> + Eq + Hash + Serialize,
-    {
+    ) -> Result<(), Error> {
         let url = format!("/containers/{}/update", container_name);
 
-        let req = self.build_request(
+        let req = self.build_request::<_, String, String>(
             &url,
             Builder::new().method(Method::POST),
-            None::<String>,
+            Ok(None::<ArrayVec<[(_, _); 0]>>),
             Docker::serialize_payload(Some(config)),
         );
 
@@ -1664,20 +2036,22 @@ impl Docker {
     ///
     /// docker.rename_container("hello-world", required);
     /// ```
-    pub async fn rename_container<T>(
+    pub async fn rename_container<T, K, V>(
         &self,
         container_name: &str,
-        options: RenameContainerOptions<T>,
+        options: T,
     ) -> Result<(), Error>
     where
-        T: Into<String> + Serialize,
+        T: RenameContainerQueryParams<K, V>,
+        K: AsRef<str>,
+        V: AsRef<str>,
     {
         let url = format!("/containers/{}/rename", container_name);
 
         let req = self.build_request(
             &url,
             Builder::new().method(Method::POST),
-            Some(options),
+            Docker::transpose_option(Some(options.into_array())),
             Ok(Body::empty()),
         );
 
@@ -1709,10 +2083,10 @@ impl Docker {
     pub async fn pause_container(&self, container_name: &str) -> Result<(), Error> {
         let url = format!("/containers/{}/pause", container_name);
 
-        let req = self.build_request(
+        let req = self.build_request::<_, String, String>(
             &url,
             Builder::new().method(Method::POST),
-            None::<String>,
+            Ok(None::<ArrayVec<[(_, _); 0]>>),
             Ok(Body::empty()),
         );
 
@@ -1744,10 +2118,10 @@ impl Docker {
     pub async fn unpause_container(&self, container_name: &str) -> Result<(), Error> {
         let url = format!("/containers/{}/unpause", container_name);
 
-        let req = self.build_request(
+        let req = self.build_request::<_, String, String>(
             &url,
             Builder::new().method(Method::POST),
-            None::<String>,
+            Ok(None::<ArrayVec<[(_, _); 0]>>),
             Ok(Body::empty()),
         );
 
@@ -1786,19 +2160,20 @@ impl Docker {
     ///
     /// docker.prune_containers(options);
     /// ```
-    pub async fn prune_containers<T>(
+    pub async fn prune_containers<T, K>(
         &self,
-        options: Option<PruneContainersOptions<T>>,
+        options: Option<T>,
     ) -> Result<ContainerPruneResponse, Error>
     where
-        T: Into<String> + Eq + Hash + Serialize,
+        T: PruneContainersQueryParams<K>,
+        K: AsRef<str> + Eq + Hash,
     {
         let url = "/containers/prune";
 
         let req = self.build_request(
             &url,
             Builder::new().method(Method::POST),
-            options,
+            Docker::transpose_option(options.map(|o| o.into_array())),
             Ok(Body::empty()),
         );
 
@@ -1841,14 +2216,16 @@ impl Docker {
     ///
     /// docker.upload_to_container("my-container", options, contents.into());
     /// ```
-    pub async fn upload_to_container<T>(
+    pub async fn upload_to_container<T, K, V>(
         &self,
         container_name: &str,
-        options: Option<UploadToContainerOptions<T>>,
+        options: Option<T>,
         tar: Body,
     ) -> Result<(), Error>
     where
-        T: Into<String> + Serialize,
+        T: UploadToContainerQueryParams<K, V>,
+        K: AsRef<str>,
+        V: AsRef<str>,
     {
         let url = format!("/containers/{}/archive", container_name);
 
@@ -1857,7 +2234,7 @@ impl Docker {
             Builder::new()
                 .method(Method::PUT)
                 .header(CONTENT_TYPE, "application/x-tar"),
-            options,
+            Docker::transpose_option(options.map(|o| o.into_array())),
             Ok(tar),
         );
 
@@ -1892,20 +2269,22 @@ impl Docker {
     ///
     /// docker.download_from_container("my-container", options);
     /// ```
-    pub fn download_from_container<T>(
+    pub fn download_from_container<T, K, V>(
         &self,
         container_name: &str,
-        options: Option<DownloadFromContainerOptions<T>>,
+        options: Option<T>,
     ) -> impl Stream<Item = Result<Bytes, Error>>
     where
-        T: Into<String> + Serialize,
+        T: DownloadFromContainerQueryParams<K, V>,
+        K: AsRef<str>,
+        V: AsRef<str>,
     {
         let url = format!("/containers/{}/archive", container_name);
 
         let req = self.build_request(
             &url,
             Builder::new().method(Method::GET),
-            options,
+            Docker::transpose_option(options.map(|o| o.into_array())),
             Ok(Body::empty()),
         );
 

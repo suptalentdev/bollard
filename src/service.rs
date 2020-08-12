@@ -4,15 +4,13 @@ pub use crate::models::*;
 
 use super::Docker;
 use crate::auth::DockerCredentials;
+use crate::docker::{FALSE_STR, TRUE_STR};
 use crate::errors::Error;
-use crate::errors::ErrorKind::JsonSerializeError;
-
+use arrayvec::ArrayVec;
 use http::header::CONTENT_TYPE;
 use http::request::Builder;
 use hyper::{Body, Method};
-use serde::ser::Serialize;
 use serde_json;
-
 use std::{collections::HashMap, hash::Hash};
 
 /// Parameters used in the [List Service API](../struct.Docker.html#method.list_services)
@@ -38,18 +36,53 @@ use std::{collections::HashMap, hash::Hash};
 ///
 /// let options: ListServicesOptions<&str> = Default::default();
 /// ```
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default)]
 pub struct ListServicesOptions<T>
 where
-    T: Into<String> + Eq + Hash + Serialize,
+    T: AsRef<str> + Eq + Hash,
 {
     /// Filters to process on the service list, encoded as JSON. Available filters:
     ///  - `id`=`<ID>` a services's ID
     ///  - `label`=`key` or `label`=`"key=value"` of a service label
     ///  - `mode`=`["replicated"|"global"] a service's scheduling mode
     ///  - `name`=`<name>` a services's name
-    #[serde(serialize_with = "crate::docker::serialize_as_json")]
     pub filters: HashMap<T, Vec<T>>,
+}
+
+#[allow(missing_docs)]
+/// Trait providing implementations for [List Services Options](struct.ListServicesOptions.html)
+/// struct.
+pub trait ListServicesQueryParams<K, V>
+where
+    K: AsRef<str>,
+    V: AsRef<str>,
+{
+    fn into_array(self) -> Result<ArrayVec<[(K, V); 1]>, Error>;
+}
+
+impl<'a, T: AsRef<str> + Eq + Hash> ListServicesQueryParams<&'a str, String>
+    for ListServicesOptions<T>
+where
+    T: ::serde::Serialize,
+{
+    fn into_array(self) -> Result<ArrayVec<[(&'a str, String); 1]>, Error> {
+        Ok(ArrayVec::from([(
+            "filters",
+            serde_json::to_string(&self.filters)?,
+        )]))
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+#[allow(missing_docs)]
+pub struct ServiceCreateResponse {
+    /// The ID of the created service.
+    #[serde(rename = "ID")]
+    pub id: Option<String>,
+
+    /// Optional warning message
+    pub warning: Option<String>,
 }
 
 /// Parameters used in the [Inspect Service API](../struct.Docker.html#method.inspect_service)
@@ -63,11 +96,33 @@ where
 ///     insert_defaults: true,
 /// };
 /// ```
-#[derive(Debug, Copy, Clone, Default, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Copy, Clone, Default)]
 pub struct InspectServiceOptions {
     /// Fill empty fields with default values.
     pub insert_defaults: bool,
+}
+
+/// Trait providing implementations for [Inspect Service Options](struct.InspectServiceOptions.html).
+#[allow(missing_docs)]
+pub trait InspectServiceQueryParams<K, V>
+where
+    K: AsRef<str>,
+    V: AsRef<str>,
+{
+    fn into_array(self) -> Result<ArrayVec<[(K, V); 1]>, Error>;
+}
+
+impl<'a> InspectServiceQueryParams<&'a str, &'a str> for InspectServiceOptions {
+    fn into_array(self) -> Result<ArrayVec<[(&'a str, &'a str); 1]>, Error> {
+        Ok(ArrayVec::from([(
+            "insertDefaults",
+            if self.insert_defaults {
+                TRUE_STR
+            } else {
+                FALSE_STR
+            },
+        )]))
+    }
 }
 
 /// Parameters used in the [Update Service API](../struct.Docker.html#method.update_service)
@@ -82,23 +137,53 @@ pub struct InspectServiceOptions {
 ///     ..Default::default()
 /// };
 /// ```
-#[derive(Debug, Copy, Clone, Default, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Copy, Clone, Default)]
 pub struct UpdateServiceOptions {
     /// The version number of the service object being updated. This is required to avoid conflicting writes. This version number should be the value as currently set on the service before the update.
     pub version: u64,
     /// If the X-Registry-Auth header is not specified, this parameter indicates whether to use registry authorization credentials from the current or the previous spec.
     pub registry_auth_from_previous: bool,
     /// Set to this parameter to true to cause a server-side rollback to the previous service spec. The supplied spec will be ignored in this case.
-    #[serde(serialize_with = "serialize_rollback")]
     pub rollback: bool,
 }
 
-fn serialize_rollback<S>(rollback: &bool, s: S) -> Result<S::Ok, S::Error>
+/// Trait providing implementations for [Update Service Options](struct.UpdateServiceOptions.html).
+#[allow(missing_docs)]
+pub trait UpdateServiceQueryParams<K, V>
 where
-    S: serde::Serializer,
+    K: AsRef<str>,
+    V: AsRef<str>,
 {
-    s.serialize_str(if *rollback { "previous" } else { "" })
+    fn into_array(self) -> Result<ArrayVec<[(K, V); 3]>, Error>;
+}
+
+impl<'a> UpdateServiceQueryParams<&'a str, String> for UpdateServiceOptions {
+    fn into_array(self) -> Result<ArrayVec<[(&'a str, String); 3]>, Error> {
+        Ok(ArrayVec::from([
+            ("version", self.version.to_string()),
+            (
+                "registryAuthFrom",
+                if self.registry_auth_from_previous {
+                    "previous-spec"
+                } else {
+                    "spec"
+                }
+                .to_string(),
+            ),
+            (
+                "rollback",
+                if self.rollback { "previous" } else { "" }.to_string(),
+            ),
+        ]))
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+#[allow(missing_docs)]
+pub struct ServiceUpdateResponse {
+    /// Optional warning message
+    pub warning: Option<String>,
 }
 
 impl Docker {
@@ -136,19 +221,17 @@ impl Docker {
     ///
     /// docker.list_services(options);
     /// ```
-    pub async fn list_services<T>(
-        &self,
-        options: Option<ListServicesOptions<T>>,
-    ) -> Result<Vec<Service>, Error>
+    pub async fn list_services<T, K>(&self, options: Option<T>) -> Result<Vec<Service>, Error>
     where
-        T: Into<String> + Eq + Hash + Serialize,
+        T: ListServicesQueryParams<K, String>,
+        K: AsRef<str>,
     {
         let url = "/services";
 
         let req = self.build_request(
             url,
             Builder::new().method(Method::GET),
-            options,
+            Docker::transpose_option(options.map(|o| o.into_array())),
             Ok(Body::empty()),
         );
 
@@ -218,19 +301,19 @@ impl Docker {
             ..Default::default()
         })) {
             Ok(ser_cred) => {
-                let req = self.build_request(
+                let req = self.build_request::<_, String, String>(
                     url,
                     Builder::new()
                         .method(Method::POST)
                         .header(CONTENT_TYPE, "application/json")
                         .header("X-Registry-Auth", base64::encode(&ser_cred)),
-                    None::<String>,
+                    Ok(None::<ArrayVec<[(_, _); 0]>>),
                     Docker::serialize_payload(Some(service_spec)),
                 );
 
                 self.process_into_value(req).await
             }
-            Err(e) => Err(JsonSerializeError { err: e }.into()),
+            Err(e) => Err(e.into()),
         }
     }
 
@@ -262,17 +345,22 @@ impl Docker {
     ///
     /// docker.inspect_service("my-service", options);
     /// ```
-    pub async fn inspect_service(
+    pub async fn inspect_service<T, K, V>(
         &self,
         service_name: &str,
-        options: Option<InspectServiceOptions>,
-    ) -> Result<Service, Error> {
+        options: Option<T>,
+    ) -> Result<Service, Error>
+    where
+        T: InspectServiceQueryParams<K, V>,
+        K: AsRef<str>,
+        V: AsRef<str>,
+    {
         let url = format!("/services/{}", service_name);
 
         let req = self.build_request(
             &url,
             Builder::new().method(Method::GET),
-            options,
+            Docker::transpose_option(options.map(|o| o.into_array())),
             Ok(Body::empty()),
         );
 
@@ -304,10 +392,10 @@ impl Docker {
     pub async fn delete_service(&self, service_name: &str) -> Result<(), Error> {
         let url = format!("/services/{}", service_name);
 
-        let req = self.build_request(
+        let req = self.build_request::<_, String, String>(
             &url,
             Builder::new().method(Method::DELETE),
-            None::<String>,
+            Ok(None::<ArrayVec<[(_, _); 0]>>),
             Ok(Body::empty()),
         );
 
@@ -374,13 +462,17 @@ impl Docker {
     ///     docker.update_service("my-service", service, options, credentials).await
     /// };
     /// ```
-    pub async fn update_service(
+    pub async fn update_service<T, K>(
         &self,
         service_name: &str,
         service_spec: ServiceSpec,
-        options: UpdateServiceOptions,
+        options: T,
         credentials: Option<DockerCredentials>,
-    ) -> Result<ServiceUpdateResponse, Error> {
+    ) -> Result<ServiceUpdateResponse, Error>
+    where
+        T: UpdateServiceQueryParams<K, String>,
+        K: AsRef<str>,
+    {
         let url = format!("/services/{}/update", service_name);
 
         match serde_json::to_string(&credentials.unwrap_or_else(|| DockerCredentials {
@@ -393,13 +485,13 @@ impl Docker {
                         .method(Method::POST)
                         .header(CONTENT_TYPE, "application/json")
                         .header("X-Registry-Auth", base64::encode(&ser_cred)),
-                    Some(options),
+                    Docker::transpose_option(Some(options.into_array())),
                     Docker::serialize_payload(Some(service_spec)),
                 );
 
                 self.process_into_value(req).await
             }
-            Err(e) => Err(JsonSerializeError { err: e }.into()),
+            Err(e) => Err(e.into()),
         }
     }
 }

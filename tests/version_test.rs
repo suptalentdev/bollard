@@ -8,12 +8,11 @@ mod common;
 #[cfg(windows)]
 #[test]
 fn test_version_named_pipe() {
-    env_logger::init();
     rt_exec!(
         Docker::connect_with_named_pipe_defaults()
             .unwrap()
             .version(),
-        |version: Version| assert_eq!(version.os.unwrap(), "windows")
+        |version: Version| assert_eq!(version.os, "windows")
     )
 }
 
@@ -22,7 +21,7 @@ fn test_version_named_pipe() {
 fn test_version_unix() {
     rt_exec!(
         Docker::connect_with_unix_defaults().unwrap().version(),
-        |version: Version| assert_eq!(version.os.unwrap(), "linux")
+        |version: Version| assert_eq!(version.os, "linux")
     )
 }
 
@@ -31,7 +30,7 @@ fn test_version_unix() {
 fn test_version_ssl() {
     rt_exec!(
         Docker::connect_with_ssl_defaults().unwrap().version(),
-        |version: Version| assert_eq!(version.os.unwrap(), "linux")
+        |version: Version| assert_eq!(version.os, "linux")
     )
 }
 
@@ -41,12 +40,12 @@ fn test_version_http() {
     #[cfg(unix)]
     rt_exec!(
         Docker::connect_with_http_defaults().unwrap().version(),
-        |version: Version| assert_eq!(version.os.unwrap(), "linux")
+        |version: Version| assert_eq!(version.os, "linux")
     );
     #[cfg(windows)]
     rt_exec!(
         Docker::connect_with_http_defaults().unwrap().version(),
-        |version: Version| assert_eq!(version.os.unwrap(), "windows")
+        |version: Version| assert_eq!(version.os, "windows")
     )
 }
 
@@ -55,14 +54,13 @@ fn test_version_http() {
 fn test_version_tls() {
     rt_exec!(
         Docker::connect_with_tls_defaults().unwrap().version(),
-        |version: Version| assert_eq!(version.os.unwrap(), "linux")
+        |version: Version| assert_eq!(version.os, "linux")
     )
 }
 
 #[cfg(unix)]
 #[test]
 fn test_downversioning() {
-    env_logger::init();
     let mut rt = Runtime::new().unwrap();
 
     let docker = Docker::connect_with_unix(

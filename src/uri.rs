@@ -21,7 +21,7 @@ impl<'a> Into<HyperUri> for Uri<'a> {
 }
 
 impl<'a> Uri<'a> {
-    pub(crate) fn parse<O>(
+    pub(crate) fn parse<O, K, V>(
         socket: &'a str,
         client_type: &ClientType,
         path: &'a str,
@@ -29,7 +29,10 @@ impl<'a> Uri<'a> {
         client_version: &ClientVersion,
     ) -> Result<Self, Error>
     where
-        O: serde::ser::Serialize,
+        O: IntoIterator,
+        O::Item: ::std::borrow::Borrow<(K, V)>,
+        K: AsRef<str>,
+        V: AsRef<str>,
     {
         let host_str = format!(
             "{}://{}/v{}.{}{}",
@@ -43,9 +46,7 @@ impl<'a> Uri<'a> {
         url = url.join(path).unwrap();
 
         if let Some(pairs) = query {
-            let qs = serde_urlencoded::to_string(pairs)
-                .map_err(|e| crate::errors::ErrorKind::URLEncodedError { err: e })?;
-            url.set_query(Some(&qs));
+            url.query_pairs_mut().extend_pairs(pairs);
         }
 
         debug!(
@@ -100,13 +101,9 @@ impl<'a> Uri<'a> {
 
     #[cfg(windows)]
     pub(crate) fn socket_path_dest(dest: &HyperUri, client_type: &ClientType) -> Option<String> {
-        format!(
-            "{}://{}",
-            Uri::socket_scheme(client_type),
-            dest.host().unwrap_or("UNKNOWN_HOST")
-        )
-        .parse()
-        .ok()
-        .and_then(|uri| Self::socket_path(&uri))
+        format!("{}://{}", Uri::socket_scheme(client_type), dest.host().unwrap_or("UNKNOWN_HOST"))
+            .parse()
+            .ok()
+            .and_then(|uri| Self::socket_path(&uri))
     }
 }

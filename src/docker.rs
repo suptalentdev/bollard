@@ -4,12 +4,12 @@ use std::fmt;
 use std::future::Future;
 #[cfg(any(feature = "ssl", feature = "tls"))]
 use std::path::{Path, PathBuf};
-use std::str::from_utf8;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
+use arrayvec::ArrayVec;
 use futures_core::Stream;
 use futures_util::future::FutureExt;
 use futures_util::future::TryFutureExt;
@@ -33,19 +33,11 @@ use tokio_util::codec::FramedRead;
 
 use crate::container::LogOutput;
 use crate::errors::Error;
-#[cfg(any(feature = "ssl", feature = "tls"))]
-use crate::errors::ErrorKind::NoCertPathError;
-#[cfg(feature = "ssl")]
-use crate::errors::ErrorKind::SSLError;
-use crate::errors::ErrorKind::{
-    APIVersionParseError, DockerResponseBadParameterError, DockerResponseConflictError,
-    DockerResponseNotFoundError, DockerResponseNotModifiedError, DockerResponseServerError,
-    HttpClientError, HyperResponseError, JsonDataError, JsonDeserializeError, JsonSerializeError,
-    RequestTimeoutError, StrParseError,
-};
+use crate::errors::Error::*;
 #[cfg(windows)]
 use crate::named_pipe::NamedPipeConnector;
 use crate::read::{JsonLineDecoder, NewlineLogOutputDecoder, StreamReader};
+use crate::system::Version;
 use crate::uri::Uri;
 
 use serde::de::DeserializeOwned;
@@ -71,6 +63,9 @@ pub const API_DEFAULT_VERSION: &'static ClientVersion = &ClientVersion {
     major_version: 1,
     minor_version: 40,
 };
+
+pub(crate) const TRUE_STR: &'static str = "true";
+pub(crate) const FALSE_STR: &'static str = "false";
 
 /// The default directory in which to look for our Docker certificate
 /// files.
@@ -158,10 +153,9 @@ pub(crate) enum MaybeClientVersion {
     None,
 }
 
-impl<T: Into<String>> From<T> for MaybeClientVersion {
-    fn from(s: T) -> MaybeClientVersion {
+impl From<String> for MaybeClientVersion {
+    fn from(s: String) -> MaybeClientVersion {
         match s
-            .into()
             .split(".")
             .map(|v| v.parse::<usize>())
             .collect::<Vec<Result<usize, std::num::ParseIntError>>>()
@@ -198,16 +192,6 @@ impl From<&(AtomicUsize, AtomicUsize)> for ClientVersion {
             minor_version: tpl.1.load(Ordering::Relaxed),
         }
     }
-}
-
-pub(crate) fn serialize_as_json<T, S>(t: &T, s: S) -> Result<S::Ok, S::Error>
-where
-    T: Serialize,
-    S: serde::Serializer,
-{
-    s.serialize_str(
-        &serde_json::to_string(t).map_err(|e| serde::ser::Error::custom(format!("{}", e)))?,
-    )
 }
 
 #[derive(Debug)]
@@ -333,25 +317,20 @@ impl Docker {
         // This ensures that using docker-machine-esque addresses work with Hyper.
         let client_addr = addr.replacen("tcp://", "", 1);
 
-        let mut ssl_connector_builder = SslConnector::builder(SslMethod::tls())
-            .map_err::<Error, _>(|e| SSLError { err: e }.into())?;
+        let mut ssl_connector_builder = SslConnector::builder(SslMethod::tls())?;
 
         ssl_connector_builder
-            .set_ca_file(ssl_ca)
-            .map_err::<Error, _>(|e| SSLError { err: e }.into())?;
+            .set_ca_file(ssl_ca)?;
         ssl_connector_builder
-            .set_certificate_file(ssl_cert, SslFiletype::PEM)
-            .map_err::<Error, _>(|e| SSLError { err: e }.into())?;
+            .set_certificate_file(ssl_cert, SslFiletype::PEM)?;
         ssl_connector_builder
-            .set_private_key_file(ssl_key, SslFiletype::PEM)
-            .map_err::<Error, _>(|e| SSLError { err: e }.into())?;
+            .set_private_key_file(ssl_key, SslFiletype::PEM)?;
 
         let mut http_connector = HttpConnector::new();
         http_connector.enforce_http(false);
 
         let https_connector: HttpsConnector<HttpConnector> =
-            HttpsConnector::with_connector(http_connector, ssl_connector_builder)
-                .map_err::<Error, _>(|e| SSLError { err: e }.into())?;
+            HttpsConnector::with_connector(http_connector, ssl_connector_builder)?;
 
         let client_builder = Client::builder();
         let client = client_builder.build(https_connector);
@@ -743,19 +722,17 @@ impl Docker {
 
         let mut tls_connector_builder = TlsConnector::builder();
 
-        use crate::errors::ErrorKind;
         use std::fs::File;
         use std::io::Read;
         let mut file = File::open(pkcs12_file)?;
         let mut buf = vec![];
         file.read_to_end(&mut buf)?;
-        let identity = Identity::from_pkcs12(&buf, pkcs12_password)
-            .map_err(|err| ErrorKind::TLSError { err })?;
+        let identity = Identity::from_pkcs12(&buf, pkcs12_password)?;
 
         let mut file = File::open(ca_file)?;
         let mut buf = vec![];
         file.read_to_end(&mut buf)?;
-        let ca = Certificate::from_pem(&buf).map_err(|err| ErrorKind::TLSError { err })?;
+        let ca = Certificate::from_pem(&buf)?;
 
         let tls_connector_builder = tls_connector_builder.identity(identity);
         tls_connector_builder.add_root_certificate(ca);
@@ -764,8 +741,7 @@ impl Docker {
         http_connector.enforce_http(false);
 
         let tls_connector = tls_connector_builder
-            .build()
-            .map_err(|err| ErrorKind::TLSError { err })?;
+            .build()?;
         let https_connector: hyper_tls::HttpsConnector<HttpConnector> =
             hyper_tls::HttpsConnector::from((http_connector, tls_connector.into()));
 
@@ -848,8 +824,7 @@ impl Docker {
             self.process_request(req)
                 .map_ok(|response| {
                     response
-                        .into_body()
-                        .map_err::<Error, _>(|e: hyper::Error| HyperResponseError { err: e }.into())
+                        .into_body().map_err(Error::from)
                 })
                 .into_stream()
                 .try_flatten(),
@@ -865,16 +840,21 @@ impl Docker {
             .try_flatten()
     }
 
+    pub(crate) fn transpose_option<T>(
+        option: Option<Result<T, Error>>,
+    ) -> Result<Option<T>, Error> {
+        option.transpose()
+    }
+
     pub(crate) fn serialize_payload<S>(body: Option<S>) -> Result<Body, Error>
     where
         S: Serialize,
     {
         match body.map(|inst| serde_json::to_string(&inst)) {
             Some(Ok(res)) => Ok(Some(res)),
-            Some(Err(e)) => Err(e),
+            Some(Err(e)) => Err(e.into()),
             None => Ok(None),
         }
-        .map_err(|e| JsonSerializeError { err: e }.into())
         .map(|payload| {
             debug!("{}", payload.clone().unwrap_or_else(String::new));
             payload
@@ -902,28 +882,24 @@ impl Docker {
     ///     };
     /// ```
     pub async fn negotiate_version(self) -> Result<Self, Error> {
-        let req = self.build_request(
+        let req = self.build_request::<_, String, String>(
             "/version",
             Builder::new().method(Method::GET),
-            None::<String>,
+            Ok(None::<ArrayVec<[(_, _); 0]>>),
             Ok(Body::empty()),
         );
 
-        let res = self
-            .process_into_value::<crate::system::Version>(req)
-            .await?;
+        let res = self.process_into_value::<Version>(req).await?;
 
-        let err_api_version = res.api_version.as_ref().unwrap().clone();
-        let server_version: ClientVersion = match res.api_version.as_ref().unwrap().into() {
+        let err_api_version = res.api_version.clone();
+        let server_version: ClientVersion = match res.api_version.into() {
             MaybeClientVersion::Some(client_version) => client_version,
             MaybeClientVersion::None => {
                 return Err(APIVersionParseError {
                     api_version: err_api_version,
-                }
-                .into())
+                })
             }
         };
-
         if server_version < self.client_version() {
             self.version
                 .0
@@ -932,7 +908,6 @@ impl Docker {
                 .1
                 .store(server_version.minor_version, Ordering::Relaxed);
         }
-
         Ok(self)
     }
 
@@ -942,8 +917,6 @@ impl Docker {
     ) -> impl Future<Output = Result<Response<Body>, Error>> {
         let transport = self.transport.clone();
         let timeout = self.client_timeout;
-
-        debug!("request: {:?}", request.as_ref().unwrap());
 
         async move {
             let request = request?;
@@ -959,25 +932,25 @@ impl Docker {
                 // Status code 304: Not Modified
                 StatusCode::NOT_MODIFIED => {
                     let message = Docker::decode_into_string(response).await?;
-                    Err(DockerResponseNotModifiedError { message }.into())
+                    Err(DockerResponseNotModifiedError { message })
                 }
 
                 // Status code 409: Conflict
                 StatusCode::CONFLICT => {
                     let message = Docker::decode_into_string(response).await?;
-                    Err(DockerResponseConflictError { message }.into())
+                    Err(DockerResponseConflictError { message })
                 }
 
                 // Status code 400: Bad request
                 StatusCode::BAD_REQUEST => {
                     let message = Docker::decode_into_string(response).await?;
-                    Err(DockerResponseBadParameterError { message }.into())
+                    Err(DockerResponseBadParameterError { message })
                 }
 
                 // Status code 404: Not Found
                 StatusCode::NOT_FOUND => {
                     let message = Docker::decode_into_string(response).await?;
-                    Err(DockerResponseNotFoundError { message }.into())
+                    Err(DockerResponseNotFoundError { message })
                 }
 
                 // All other status codes
@@ -986,44 +959,41 @@ impl Docker {
                     Err(DockerResponseServerError {
                         status_code: status.as_u16(),
                         message,
-                    }
-                    .into())
+                    })
                 }
             }
         }
     }
 
-    pub(crate) fn build_request<O>(
+    pub(crate) fn build_request<O, K, V>(
         &self,
         path: &str,
         builder: Builder,
-        query: Option<O>,
+        query: Result<Option<O>, Error>,
         payload: Result<Body, Error>,
     ) -> Result<Request<Body>, Error>
     where
-        O: Serialize,
+        O: IntoIterator,
+        O::Item: ::std::borrow::Borrow<(K, V)>,
+        K: AsRef<str>,
+        V: AsRef<str>,
     {
-        let uri = Uri::parse(
-            &self.client_addr,
-            &self.client_type,
-            path,
-            query,
-            &self.client_version(),
-        )?;
-        let request_uri: hyper::Uri = uri.into();
-        debug!("{}", &request_uri);
-        let builder_string = format!("{:?}", builder);
-        Ok(builder
-            .uri(request_uri)
-            .header(CONTENT_TYPE, "application/json")
-            .body(payload?)
-            .map_err::<Error, _>(|e| {
-                HttpClientError {
-                    builder: builder_string,
-                    err: e,
-                }
-                .into()
-            })?)
+        query
+            .and_then(|q| payload.map(|body| (q, body)))
+            .and_then(|(q, body)| {
+                let uri = Uri::parse(
+                    &self.client_addr,
+                    &self.client_type,
+                    path,
+                    q,
+                    &self.client_version(),
+                )?;
+                let request_uri: hyper::Uri = uri.into();
+                Ok(builder
+                    .uri(request_uri)
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(body)?)
+            })
     }
 
     async fn execute_request(
@@ -1045,8 +1015,8 @@ impl Docker {
         };
 
         match tokio::time::timeout(Duration::from_secs(timeout), request).await {
-            Ok(v) => v.map_err(|err| HyperResponseError { err }.into()),
-            Err(_) => Err(RequestTimeoutError.into()),
+            Ok(v) => Ok(v?),
+            Err(_) => Err(RequestTimeoutError),
         }
     }
 
@@ -1056,8 +1026,7 @@ impl Docker {
     {
         FramedRead::new(
             StreamReader::new(
-                res.into_body()
-                    .map_err::<Error, _>(|e: hyper::Error| HyperResponseError { err: e }.into()),
+                res.into_body().map_err(Error::from),
             ),
             JsonLineDecoder::new(),
         )
@@ -1068,8 +1037,7 @@ impl Docker {
     ) -> impl Stream<Item = Result<LogOutput, Error>> {
         FramedRead::new(
             StreamReader::new(
-                res.into_body()
-                    .map_err::<Error, _>(|e: hyper::Error| HyperResponseError { err: e }.into()),
+                res.into_body().map_err(Error::from),
             ),
             NewlineLogOutputDecoder::new(),
         )
@@ -1082,22 +1050,13 @@ impl Docker {
             .on_upgrade()
             .into_stream()
             .map_ok(|r| FramedRead::new(r, NewlineLogOutputDecoder::new()))
-            .map_err::<Error, _>(|e| HyperResponseError { err: e }.into())
             .try_flatten()
     }
 
     async fn decode_into_string(response: Response<Body>) -> Result<String, Error> {
-        let body = hyper::body::to_bytes(response.into_body())
-            .await
-            .map_err(|e| HyperResponseError { err: e })?;
+        let body = hyper::body::to_bytes(response.into_body()).await?;
 
-        from_utf8(&body).map(|x| x.to_owned()).map_err(|e| {
-            StrParseError {
-                content: hex::encode(body.to_owned()),
-                err: e,
-            }
-            .into()
-        })
+        Ok(String::from_utf8_lossy(&body).to_string())
     }
 
     async fn decode_response<T>(response: Response<Body>) -> Result<T, Error>
@@ -1114,13 +1073,8 @@ impl Docker {
                     column: e.column(),
                     contents: contents.to_owned(),
                 }
-                .into()
             } else {
-                JsonDeserializeError {
-                    content: contents.to_owned(),
-                    err: e,
-                }
-                .into()
+                e.into()
             }
         })
     }

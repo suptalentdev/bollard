@@ -18,7 +18,7 @@ fn main() {
     rt.block_on(run()).unwrap();
 }
 
-async fn run() -> Result<(), failure::Error> {
+async fn run() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(unix)]
     let docker = Docker::connect_with_unix_defaults().unwrap();
     #[cfg(windows)]
@@ -114,7 +114,7 @@ async fn run() -> Result<(), failure::Error> {
         .start_container("kafka1", None::<StartContainerOptions<String>>)
         .await?;
 
-    let mut stream1 = sd1.logs::<String>(
+    let mut stream1 = sd1.logs(
         "kafka1",
         Some(LogsOptions {
             follow: true,
@@ -147,7 +147,7 @@ async fn run() -> Result<(), failure::Error> {
         .start_container("kafka2", None::<StartContainerOptions<String>>)
         .await?;
 
-    let mut stream2 = sd2.logs::<String>(
+    let mut stream2 = sd2.logs(
         "kafka2",
         Some(LogsOptions {
             follow: true,

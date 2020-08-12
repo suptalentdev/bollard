@@ -124,12 +124,14 @@ async fn prune_volumes_test(docker: Docker) -> Result<(), Error> {
     // we need to filter the results, because volumes without a label are not pruned
     assert_eq!(
         &expected_results_label,
-        &results
+        results
             .volumes
             .iter()
-            .find(|v| !v.labels.is_empty())
+            .find(|v| v.labels.is_some())
             .unwrap()
             .labels
+            .as_ref()
+            .unwrap()
     );
 
     let remove_volume_options = RemoveVolumeOptions { force: true };
