@@ -1,8 +1,11 @@
 //! Stream stats for all running Docker containers asynchronously
 #![type_length_limit = "2097152"]
+#[macro_use]
+extern crate failure;
 
 use bollard::container::{ListContainersOptions, StatsOptions};
 use bollard::Docker;
+use failure::Error;
 
 use futures_util::stream::StreamExt;
 use futures_util::stream::TryStreamExt;
@@ -10,7 +13,7 @@ use tokio::runtime::Runtime;
 
 use std::collections::HashMap;
 
-async fn run<'a>() -> Result<(), Box<dyn std::error::Error>> {
+async fn run<'a>() -> Result<(), Error> {
     #[cfg(unix)]
     let docker = Docker::connect_with_unix_defaults().unwrap();
     #[cfg(windows)]
@@ -28,7 +31,7 @@ async fn run<'a>() -> Result<(), Box<dyn std::error::Error>> {
             .await?;
 
         if containers.is_empty() {
-            panic!("no running containers");
+            bail!("no running containers");
         } else {
             for container in containers {
                 let container_id = container.id.as_ref().unwrap();
