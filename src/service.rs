@@ -5,13 +5,10 @@ pub use crate::models::*;
 use super::Docker;
 use crate::auth::DockerCredentials;
 use crate::errors::Error;
-use crate::errors::ErrorKind::JsonSerializeError;
-
 use http::header::CONTENT_TYPE;
 use http::request::Builder;
 use hyper::{Body, Method};
 use serde::ser::Serialize;
-use serde_json;
 
 use std::{collections::HashMap, hash::Hash};
 
@@ -94,6 +91,7 @@ pub struct UpdateServiceOptions {
     pub rollback: bool,
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)]
 fn serialize_rollback<S>(rollback: &bool, s: S) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
@@ -230,7 +228,7 @@ impl Docker {
 
                 self.process_into_value(req).await
             }
-            Err(e) => Err(JsonSerializeError { err: e }.into()),
+            Err(e) => Err(e.into()),
         }
     }
 
@@ -399,7 +397,7 @@ impl Docker {
 
                 self.process_into_value(req).await
             }
-            Err(e) => Err(JsonSerializeError { err: e }.into()),
+            Err(e) => Err(e.into()),
         }
     }
 }

@@ -5,13 +5,11 @@ use http::header::CONTENT_TYPE;
 use http::request::Builder;
 use hyper::{body::Bytes, Body, Method};
 use serde::Serialize;
-use serde_json;
 
 use super::Docker;
 use crate::auth::DockerCredentials;
 use crate::container::Config;
 use crate::errors::Error;
-use crate::errors::ErrorKind::JsonSerializeError;
 use crate::models::*;
 
 use std::cmp::Eq;
@@ -551,7 +549,7 @@ impl Docker {
                 self.process_into_stream(req).boxed()
             }
             Err(e) => {
-                stream::once(async move { Err(JsonSerializeError { err: e }.into()) }).boxed()
+                stream::once(async move { Err(Error::from(e)) }).boxed()
             }
         }
     }
@@ -789,7 +787,7 @@ impl Docker {
                 );
                 self.process_into_value(req).await
             }
-            Err(e) => Err(JsonSerializeError { err: e }.into()),
+            Err(e) => Err(e.into()),
         }
     }
 
@@ -910,7 +908,7 @@ impl Docker {
 
                 self.process_into_unit(req).await
             }
-            Err(e) => Err(JsonSerializeError { err: e }.into()),
+            Err(e) => Err(e.into()),
         }
     }
 
@@ -1030,7 +1028,7 @@ impl Docker {
     {
         let url = "/build";
 
-        match serde_json::to_string(&credentials.unwrap_or_else(|| HashMap::new())) {
+        match serde_json::to_string(&credentials.unwrap_or_else(HashMap::new)) {
             Ok(ser_cred) => {
                 let req = self.build_request(
                     &url,
@@ -1039,13 +1037,13 @@ impl Docker {
                         .header(CONTENT_TYPE, "application/x-tar")
                         .header("X-Registry-Config", base64::encode(&ser_cred)),
                     Some(options),
-                    Ok(tar.unwrap_or_else(|| Body::empty())),
+                    Ok(tar.unwrap_or_else(Body::empty)),
                 );
 
                 self.process_into_stream(req).boxed()
             }
             Err(e) => {
-                stream::once(async move { Err(JsonSerializeError { err: e }.into()) }).boxed()
+                stream::once(async move { Err(e.into()) }).boxed()
             }
         }
     }
@@ -1148,7 +1146,7 @@ impl Docker {
         root_fs: Body,
         credentials: Option<HashMap<String, DockerCredentials>>,
     ) -> impl Stream<Item = Result<BuildInfo, Error>> {
-        match serde_json::to_string(&credentials.unwrap_or_else(|| HashMap::new())) {
+        match serde_json::to_string(&credentials.unwrap_or_else(HashMap::new)) {
             Ok(ser_cred) => {
                 let req = self.build_request(
                     "/images/load",
@@ -1162,7 +1160,7 @@ impl Docker {
                 self.process_into_stream(req).boxed()
             }
             Err(e) => {
-                stream::once(async move { Err(JsonSerializeError { err: e }.into()) }).boxed()
+                stream::once(async move { Err(e.into()) }).boxed()
             }
         }
     }
