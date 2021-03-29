@@ -475,18 +475,6 @@ impl fmt::Display for LogOutput {
     }
 }
 
-impl LogOutput {
-    /// Get the raw bytes of the output
-    pub fn into_bytes(self) -> Bytes {
-        match self {
-            LogOutput::StdErr { message } => message,
-            LogOutput::StdOut { message } => message,
-            LogOutput::StdIn { message } => message,
-            LogOutput::Console { message } => message,
-        }
-    }
-}
-
 /// Parameters used in the [Stats API](super::Docker::stats())
 ///
 /// ## Examples
@@ -496,12 +484,16 @@ impl LogOutput {
 ///
 /// StatsOptions{
 ///     stream: false,
+///     one_shot: false,
 /// };
 /// ```
 #[derive(Debug, Copy, Clone, Default, Serialize)]
 pub struct StatsOptions {
     /// Stream the output. If false, the stats will be output once and then it will disconnect.
     pub stream: bool,
+    /// Only get a single stat instead of waiting for 2 cycles. Must be used with `stream = false`.
+    #[serde(rename = "one-shot")]
+    pub one_shot: bool,
 }
 
 /// Granular memory statistics for the container.

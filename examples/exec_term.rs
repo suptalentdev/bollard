@@ -6,12 +6,12 @@ use bollard::Docker;
 
 use bollard::exec::{CreateExecOptions, ResizeExecOptions, StartExecResults};
 use bollard::image::CreateImageOptions;
-use futures_util::{StreamExt, TryStreamExt};
+use futures_util::TryStreamExt;
 use std::io::{stdout, Read, Write};
 use std::time::Duration;
 use termion::raw::IntoRawMode;
 use termion::{async_stdin, terminal_size};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::task::spawn;
 use tokio::time::sleep;
 
@@ -60,10 +60,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
         )
         .await?
         .id;
-    if let StartExecResults::Attached {
+    if let StartExecResults::AttachedTTY {
         mut output,
         mut input,
-    } = docker.start_exec(&exec, None).await?
+    } = docker.start_exec(&exec, None, true).await?
     {
         // pipe stdin into the docker exec stream input
         spawn(async move {
@@ -92,8 +92,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
         let mut stdout = stdout.lock().into_raw_mode()?;
 
         // pipe docker exec output into stdout
-        while let Some(Ok(output)) = output.next().await {
-            stdout.write(output.into_bytes().as_ref())?;
+        let mut buff = [0; 128];
+        while let Ok(read) = output.read(&mut buff).await {
+            if read == 0 {
+                break;
+            }
+            stdout.write(&buff[0..read])?;
             stdout.flush()?;
         }
     }
