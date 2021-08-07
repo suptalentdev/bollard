@@ -25,7 +25,7 @@
 //! # API
 //! ## Documentation
 //!
-//! [API docs](https://docs.rs/bollard/).
+//! [API docs](crate).
 //!
 //! Version 0.11 re-enables Windows Named Pipe support.
 //! 
