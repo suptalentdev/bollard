@@ -14,7 +14,3 @@ pub struct DockerCredentials {
     pub identitytoken: Option<String>,
     pub registrytoken: Option<String>,
 }
-
-pub(crate) fn base64_url_encode(payload: &str) -> String {
-    base64::encode_config(payload, base64::URL_SAFE)
-}
